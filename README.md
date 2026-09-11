@@ -4,12 +4,19 @@ A local Windows MCP server that reads Apple Reminders through the visible iCloud
 
 ## Current slice
 
-`list_reminder_lists` returns:
+`list_reminder_lists` returns list names and identifiers. `list_reminders` accepts an optional `listId` (the currently selected list is used when omitted) and returns:
 
 ```json
 {
-  "lists": [
-    { "id": "_icloud-list-id", "name": "Reminders", "idSource": "icloud" }
+  "reminders": [
+    {
+      "id": "11111111-2222-4333-8444-555555555555",
+      "listId": "_icloud-list-id",
+      "title": "Example reminder",
+      "notes": null,
+      "due": "9/11/2026, 5:00 PM",
+      "completed": false
+    }
   ]
 }
 ```
@@ -64,10 +71,11 @@ Restart the local Codex client after changing MCP configuration.
 - `AUTH_REQUIRED`: sign in in the visible browser, then retry.
 - `TWO_FACTOR_REQUIRED`: finish Apple's two-factor prompt in the browser, then retry.
 - `LISTS_UNAVAILABLE`: Reminders or its lists are unavailable for the current account/session.
+- `LIST_NOT_FOUND`: the requested list ID is unavailable.
 - `PAGE_STRUCTURE_CHANGED`: Apple's DOM no longer matches the verified selectors.
 
 Set `ICLOUD_PROFILE_DIR` to move the dedicated browser profile, or `ICLOUD_BROWSER_PATH` to use a specific Chromium executable.
 
 ## Scope
 
-This first vertical slice intentionally excludes listing, creating, completing, and deleting reminders. Add the next operation only after this slice remains reliable in normal use.
+This read-only slice intentionally excludes creating, completing, and deleting reminders. It returns the reminders visible in iCloud's normal list view; completed-history expansion is not implemented.

@@ -16,10 +16,20 @@ export type ReminderList = {
   idSource: "icloud" | "derived";
 };
 
+export type Reminder = {
+  id: string;
+  listId: string;
+  title: string;
+  notes: string | null;
+  due: string | null;
+  completed: boolean;
+};
+
 export type ICloudErrorCode =
   | "AUTH_REQUIRED"
   | "TWO_FACTOR_REQUIRED"
   | "LISTS_UNAVAILABLE"
+  | "LIST_NOT_FOUND"
   | "PAGE_STRUCTURE_CHANGED";
 
 export class ICloudError extends Error {
@@ -33,12 +43,23 @@ export class ICloudError extends Error {
 }
 
 export function parseListIdFromReminderRow(rowId: string | null): string | undefined {
-  return rowId?.match(/^reminder-item-(.+) Reminder\/[^/]+$/)?.[1];
+  return parseReminderRowId(rowId)?.listId;
+}
+
+export function parseReminderRowId(
+  rowId: string | null,
+): { listId: string; reminderId: string } | undefined {
+  const match = rowId?.match(/^reminder-item-(.+) Reminder\/([^/]+)$/);
+  return match ? { listId: match[1], reminderId: match[2] } : undefined;
 }
 
 export function deriveListId(name: string, occurrence = 0): string {
   const hash = createHash("sha256").update(`${name}\0${occurrence}`).digest("hex").slice(0, 16);
   return `derived:${hash}`;
+}
+
+export function normalizeDueText(text: string): string | null {
+  return text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null;
 }
 
 async function isVisible(locator: Locator): Promise<boolean> {
@@ -112,7 +133,12 @@ async function requireReminderTree(page: Page): Promise<Locator> {
   }
 }
 
-export async function listReminderLists(): Promise<ReminderList[]> {
+async function scanReminderLists(): Promise<{
+  page: Page;
+  items: Locator;
+  selected: number;
+  lists: ReminderList[];
+}> {
   const page = await getPage();
   const tree = await requireReminderTree(page);
   const items = tree.locator(":scope > [role=treeitem]");
@@ -156,7 +182,57 @@ export async function listReminderLists(): Promise<ReminderList[]> {
   if (selected >= 0 && selected < count) {
     await items.nth(selected).click();
   }
-  return lists;
+  return { page, items, selected, lists };
+}
+
+export async function listReminderLists(): Promise<ReminderList[]> {
+  return (await scanReminderLists()).lists;
+}
+
+export async function listReminders(listId?: string): Promise<Reminder[]> {
+  const scan = await scanReminderLists();
+  const index = listId === undefined ? (scan.selected >= 0 ? scan.selected : 0) : scan.lists.findIndex((list) => list.id === listId);
+  if (index < 0) {
+    throw new ICloudError("LIST_NOT_FOUND", `Reminder list '${listId}' is unavailable.`);
+  }
+
+  await scan.items.nth(index).click();
+  // ponytail: short settle for Apple's client render; replace if the DOM gains a reliable loading signal.
+  await scan.page.waitForTimeout(250);
+  const rows = scan.page.frameLocator("iframe#early-child").locator('.reminder-item[id^="reminder-item-"]');
+  const reminders: Reminder[] = [];
+
+  try {
+    for (let rowIndex = 0; rowIndex < (await rows.count()); rowIndex += 1) {
+      const row = rows.nth(rowIndex);
+      const parsedId = parseReminderRowId(await row.getAttribute("id"));
+      const completionLabel = await row.locator("button.mark-completed").getAttribute("aria-label");
+      if (!parsedId || !/as (?:in)?complete$/i.test(completionLabel ?? "")) {
+        throw new ICloudError("PAGE_STRUCTURE_CHANGED", "A reminder row no longer matches the verified structure.");
+      }
+
+      const title = (await row.getByRole("textbox", { name: "Reminder" }).innerText()).trim();
+      if (!title) {
+        throw new ICloudError("PAGE_STRUCTURE_CHANGED", "A reminder row is missing its title.");
+      }
+      const notes = (await row.getByRole("textbox", { name: "Notes" }).innerText()).trim();
+      const dueLocator = row.locator(".due-date");
+      const due = (await dueLocator.count()) > 0 ? normalizeDueText(await dueLocator.innerText()) : null;
+      reminders.push({
+        id: parsedId.reminderId,
+        listId: parsedId.listId,
+        title,
+        notes: notes || null,
+        due,
+        completed: /as incomplete$/i.test(completionLabel ?? ""),
+      });
+    }
+    return reminders;
+  } finally {
+    if (scan.selected >= 0 && scan.selected < scan.lists.length) {
+      await scan.items.nth(scan.selected).click();
+    }
+  }
 }
 
 export async function closeICloud(): Promise<void> {
