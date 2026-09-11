@@ -99,7 +99,7 @@ const server = new Server(
   {
     capabilities: { tools: {} },
     instructions:
-      "Use this local server to read and manage Apple Reminders through iCloud.com. Authentication happens only in its visible browser. Never request Apple credentials or 2FA codes. Deletion is not available.",
+      "Use this local headless server to read and manage Apple Reminders through iCloud.com. If authentication is required, tell the user to run 'npm run auth'. Never request Apple credentials or 2FA codes. Deletion is not available.",
   },
 );
 
@@ -142,6 +142,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           title: { type: "string", minLength: 1 },
           listId: { type: "string", minLength: 1 },
           notes: { type: "string" },
+          due: { type: "string", format: "date-time" },
         },
         required: ["title"],
         additionalProperties: false,
@@ -237,6 +238,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             requireString(args, "title"),
             args.listId === undefined ? undefined : requireString(args, "listId"),
             args.notes === undefined ? undefined : requireString(args, "notes", true),
+            args.due === undefined ? undefined : requireString(args, "due"),
           ),
         };
         break;

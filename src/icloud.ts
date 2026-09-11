@@ -73,12 +73,11 @@ async function getPage(): Promise<Page> {
   context ??= await chromium.launchPersistentContext(PROFILE_DIR, {
     channel: "chrome",
     executablePath: process.env.ICLOUD_BROWSER_PATH,
-    headless: false,
+    headless: true,
   });
 
   const pages = context.pages();
   const page = pages.find((candidate) => candidate.url().includes("icloud.com/reminders")) ?? pages[0] ?? (await context.newPage());
-  await page.bringToFront();
   if (!page.url().includes("icloud.com/reminders")) {
     await page.goto(ICLOUD_URL, { waitUntil: "domcontentloaded" });
   }
@@ -95,11 +94,9 @@ async function requireReminderTree(page: Page): Promise<Locator> {
   } catch {
     const signIn = page.getByText("Sign In", { exact: true }).first();
     if (await isVisible(signIn)) {
-      await signIn.click();
-      await page.locator("iframe#aid-auth-widget-iFrame").waitFor({ state: "visible", timeout: 5_000 }).catch(() => {});
       throw new ICloudError(
         "AUTH_REQUIRED",
-        "Finish signing in to iCloud in the visible browser. The server never reads your password or verification code.",
+        "Run 'npm run auth' to sign in to iCloud, then retry.",
       );
     }
 
@@ -111,13 +108,13 @@ async function requireReminderTree(page: Page): Promise<Locator> {
     if (needsTwoFactor) {
       throw new ICloudError(
         "TWO_FACTOR_REQUIRED",
-        "Finish Apple two-factor authentication in the visible browser, then retry.",
+        "Run 'npm run auth' to finish Apple two-factor authentication, then retry.",
       );
     }
     if (await isVisible(page.locator("iframe#aid-auth-widget-iFrame"))) {
       throw new ICloudError(
         "AUTH_REQUIRED",
-        "Sign in to iCloud in the visible browser. The server never reads your password or verification code.",
+        "Run 'npm run auth' to sign in to iCloud, then retry.",
       );
     }
 
@@ -173,22 +170,13 @@ async function scanReminderLists(): Promise<{
       throw new ICloudError("PAGE_STRUCTURE_CHANGED", "A reminder list is missing its visible name.");
     }
 
-    await item.dispatchEvent("click");
-    await waitForReminderView(page);
-    const rows = page.frameLocator("iframe#early-child").locator('[id^="reminder-item-"]');
-    const rowId = (await rows.count()) > 0 ? await rows.first().getAttribute("id") : null;
-    const nativeId = parseListIdFromReminderRow(rowId);
     const occurrence = occurrences.get(name) ?? 0;
     occurrences.set(name, occurrence + 1);
     lists.push({
-      id: nativeId ?? deriveListId(name, occurrence),
+      id: deriveListId(name, occurrence),
       name,
-      idSource: nativeId ? "icloud" : "derived",
+      idSource: "derived",
     });
-  }
-
-  if (selected >= 0 && selected < count) {
-    await items.nth(selected).dispatchEvent("click");
   }
   return { page, items, selected, lists };
 }
@@ -208,18 +196,18 @@ async function selectReminderList(listId?: string) {
   if (index < 0) {
     throw new ICloudError("LIST_NOT_FOUND", `Reminder list '${listId}' is unavailable.`);
   }
-  await scan.items.nth(index).dispatchEvent("click");
+  await scan.items.nth(index).click();
   await waitForReminderView(scan.page);
   return { ...scan, index, list: scan.lists[index] };
 }
 
 async function restoreSelectedList(scan: Awaited<ReturnType<typeof scanReminderLists>>): Promise<void> {
   if (scan.selected >= 0 && scan.selected < scan.lists.length) {
-    await scan.items.nth(scan.selected).dispatchEvent("click");
+    await scan.items.nth(scan.selected).click();
   }
 }
 
-async function readReminderRow(row: Locator): Promise<Reminder> {
+async function readReminderRow(row: Locator, listId?: string): Promise<Reminder> {
   const parsedId = parseReminderRowId(await row.getAttribute("id"));
   const completionLabel = await row.locator("button.mark-completed").getAttribute("aria-label");
   if (!parsedId || !/as (?:in)?complete$/i.test(completionLabel ?? "")) {
@@ -235,12 +223,46 @@ async function readReminderRow(row: Locator): Promise<Reminder> {
   const due = (await dueLocator.count()) > 0 ? normalizeDueText(await dueLocator.innerText()) : null;
   return {
     id: parsedId.reminderId,
-    listId: parsedId.listId,
+    listId: listId ?? parsedId.listId,
     title,
     notes: notes || null,
     due,
     completed: /as incomplete$/i.test(completionLabel ?? ""),
   };
+}
+
+function parseDue(dueText: string): Date {
+  const due = new Date(dueText);
+  if (Number.isNaN(due.getTime())) {
+    throw new ICloudError("INVALID_ARGUMENT", "due must be a valid ISO 8601 date-time.");
+  }
+  return due;
+}
+
+async function setReminderDue(row: Locator, due: Date): Promise<void> {
+  await row.hover();
+  await row.getByRole("button", { name: "Edit Reminder" }).click();
+  const editor = row.page().frameLocator("iframe#early-child").locator("ui-popover-content").last();
+  await editor.waitFor({ state: "visible", timeout: 5_000 });
+
+  const dateSwitch = editor.getByRole("switch", { name: "Remind me on a Day" });
+  if ((await dateSwitch.getAttribute("aria-checked")) !== "true") await dateSwitch.click();
+
+  const values: Record<string, string> = {
+    month: String(due.getMonth() + 1),
+    day: String(due.getDate()),
+    year: String(due.getFullYear()),
+    hour: String(due.getHours() % 12 || 12),
+    minute: String(due.getMinutes()),
+    "AM/PM": due.getHours() < 12 ? "AM" : "PM",
+  };
+  const timeCheckbox = editor.getByRole("checkbox");
+  if ((await timeCheckbox.getAttribute("aria-checked")) !== "true") await timeCheckbox.click();
+  for (const [name, value] of Object.entries(values)) {
+    await editor.getByRole("spinbutton", { name }).fill(value);
+  }
+  await editor.getByRole("button", { name: "Save", exact: true }).click();
+  await editor.waitFor({ state: "hidden", timeout: 5_000 });
 }
 
 async function findReminderRow(page: Page, reminderId: string): Promise<Locator> {
@@ -260,7 +282,7 @@ export async function listReminders(listId?: string): Promise<Reminder[]> {
 
   try {
     for (let rowIndex = 0; rowIndex < (await rows.count()); rowIndex += 1) {
-      reminders.push(await readReminderRow(rows.nth(rowIndex)));
+      reminders.push(await readReminderRow(rows.nth(rowIndex), scan.list.id));
     }
     return reminders;
   } finally {
@@ -268,7 +290,8 @@ export async function listReminders(listId?: string): Promise<Reminder[]> {
   }
 }
 
-export async function createReminder(title: string, listId?: string, notes?: string): Promise<Reminder> {
+export async function createReminder(title: string, listId?: string, notes?: string, due?: string): Promise<Reminder> {
+  const dueDate = due === undefined ? undefined : parseDue(due);
   const scan = await selectReminderList(listId);
   try {
     const frame = scan.page.frameLocator("iframe#early-child");
@@ -284,7 +307,11 @@ export async function createReminder(title: string, listId?: string, notes?: str
     }
     // ponytail: iCloud has no save indicator; a short blur settle is the smallest verified boundary.
     await scan.page.waitForTimeout(750);
-    return await readReminderRow(row);
+    if (dueDate !== undefined) {
+      await setReminderDue(row, dueDate);
+      await scan.page.waitForTimeout(750);
+    }
+    return await readReminderRow(row, scan.list.id);
   } catch (error) {
     if (error instanceof ICloudError) throw error;
     throw new ICloudError("WRITE_FAILED", `Could not create reminder: ${error instanceof Error ? error.message : "unknown error"}`);
@@ -301,7 +328,7 @@ export async function updateReminderNotes(listId: string, reminderId: string, no
     await notesField.fill(notes);
     await notesField.press("Tab");
     await scan.page.waitForTimeout(750);
-    return await readReminderRow(row);
+    return await readReminderRow(row, scan.list.id);
   } catch (error) {
     if (error instanceof ICloudError) throw error;
     throw new ICloudError("WRITE_FAILED", `Could not update reminder notes: ${error instanceof Error ? error.message : "unknown error"}`);
@@ -317,7 +344,7 @@ export async function completeReminder(
   const scan = await selectReminderList(listId);
   try {
     const row = await findReminderRow(scan.page, reminderId);
-    const reminder = await readReminderRow(row);
+    const reminder = await readReminderRow(row, scan.list.id);
     if (reminder.completed) {
       return { id: reminder.id, listId: reminder.listId, completed: true };
     }
@@ -389,4 +416,26 @@ export async function renameReminderList(listId: string, name: string): Promise<
 export async function closeICloud(): Promise<void> {
   await context?.close();
   context = undefined;
+}
+
+export async function authenticateICloud(): Promise<void> {
+  const authContext = await chromium.launchPersistentContext(PROFILE_DIR, {
+    channel: "chrome",
+    executablePath: process.env.ICLOUD_BROWSER_PATH,
+    headless: false,
+  });
+  try {
+    const page = authContext.pages()[0] ?? (await authContext.newPage());
+    await page.goto(ICLOUD_URL, { waitUntil: "domcontentloaded" });
+    const tree = page.frameLocator("iframe#early-child").getByRole("tree", { name: "Reminder Lists" });
+    if (!(await isVisible(tree))) {
+      const signIn = page.getByText("Sign In", { exact: true }).first();
+      if (await isVisible(signIn)) await signIn.click();
+      console.error("Complete Apple sign-in and two-factor authentication in Chrome.");
+      await tree.waitFor({ state: "visible", timeout: 10 * 60_000 });
+    }
+    console.error("iCloud authentication is ready. Chrome will close.");
+  } finally {
+    await authContext.close();
+  }
 }

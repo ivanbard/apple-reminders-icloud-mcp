@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "auth": "npm run build && node dist/auth.js",
     "build": "tsc",
     "start": "node dist/index.js",
     "test": "node --test dist/icloud.test.js",
+    "test:live": "npm run build && node --test dist/icloud.live.test.js",
     "check": "npm run build && npm test"
   },
   "dependencies": {

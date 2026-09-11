@@ -1,12 +1,12 @@
 # Apple Reminders iCloud MCP
 
-A local Windows MCP server that reads and manages Apple Reminders through the visible iCloud.com web app. This is unofficial and may need selector maintenance when Apple changes the site.
+A local Windows MCP server that reads and manages Apple Reminders through iCloud.com in headless Chrome. This is unofficial and may need selector maintenance when Apple changes the site.
 
 ## Tools
 
 - `list_reminder_lists`
 - `list_reminders` (optional `listId`; otherwise uses the selected list)
-- `create_reminder` (`title`, optional `listId` and `notes`)
+- `create_reminder` (`title`, optional `listId`, `notes`, and ISO 8601 `due` date-time)
 - `complete_reminder` (`listId`, `reminderId`)
 - `update_reminder_notes` (`listId`, `reminderId`, `notes`; use `""` to clear)
 - `create_reminder_list` (`name`)
@@ -29,7 +29,7 @@ Reminder reads and writes return the same shape:
 }
 ```
 
-The server uses native list IDs found in reminder-row DOM IDs. Empty lists have deterministic `derived:` IDs based on name and duplicate-name position; those IDs can change if a list is renamed or reordered.
+List IDs are deterministic `derived:` values based on name and duplicate-name position; they can change if a list is renamed or reordered. Reminder IDs come from iCloud's reminder-row DOM IDs.
 
 ## Observed iCloud workflow
 
@@ -56,7 +56,13 @@ npm install
 npm run check
 ```
 
-The first tool call opens a visible, dedicated Chrome profile. Sign in and complete two-factor authentication there, then call the tool again. Session cookies remain only in `%LOCALAPPDATA%\apple-reminders-icloud-mcp\profile`; the server never reads, stores, logs, or transmits your password or verification code.
+Authenticate the dedicated Chrome profile once, then run the MCP server headlessly:
+
+```powershell
+npm run auth
+```
+
+Sign in and complete two-factor authentication in the Chrome window. It closes when Reminders is ready. Session cookies remain only in `%LOCALAPPDATA%\apple-reminders-icloud-mcp\profile`; the server never reads, stores, logs, or transmits your password or verification code.
 
 Build and register the STDIO server with Codex:
 
@@ -79,8 +85,8 @@ Restart the local Codex client after changing MCP configuration.
 
 ## Errors
 
-- `AUTH_REQUIRED`: sign in in the visible browser, then retry.
-- `TWO_FACTOR_REQUIRED`: finish Apple's two-factor prompt in the browser, then retry.
+- `AUTH_REQUIRED`: run `npm run auth`, then retry.
+- `TWO_FACTOR_REQUIRED`: run `npm run auth`, finish Apple's prompt, then retry.
 - `LISTS_UNAVAILABLE`: Reminders or its lists are unavailable for the current account/session.
 - `LIST_NOT_FOUND`: the requested list ID is unavailable.
 - `REMINDER_NOT_FOUND`: the requested reminder ID is unavailable in that list.
@@ -89,6 +95,8 @@ Restart the local Codex client after changing MCP configuration.
 - `PAGE_STRUCTURE_CHANGED`: Apple's DOM no longer matches the verified selectors.
 
 Set `ICLOUD_PROFILE_DIR` to move the dedicated browser profile, or `ICLOUD_BROWSER_PATH` to use a specific Chromium executable.
+
+Run the opt-in live headless suite against the authenticated account with `npm run test:live`. It reads every list and intentionally leaves a timestamped scheduled reminder, test list, and updated reminder for inspection.
 
 ## Scope
 
