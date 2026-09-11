@@ -1,77 +1,56 @@
 # Apple Reminders iCloud MCP
 
-A local Windows MCP server that reads and manages Apple Reminders through iCloud.com in headless Chrome. This is unofficial and may need selector maintenance when Apple changes the site.
+An unofficial MCP server for reading and managing Apple Reminders through iCloud.com. It runs locally with Node.js and Chrome, so **macOS is not required**.
 
-## Tools
+The server automates the public iCloud Reminders web app rather than calling private iCloud APIs. Apple can change that interface at any time, so selectors may occasionally need maintenance.
 
-- `list_reminder_lists`
-- `list_reminders` (optional `listId`; otherwise uses the selected list)
-- `create_reminder` (`title`, optional `listId`, `notes`, and ISO 8601 `due` date-time)
-- `complete_reminder` (`listId`, `reminderId`)
-- `update_reminder_notes` (`listId`, `reminderId`, `notes`; use `""` to clear)
-- `create_reminder_list` (`name`)
-- `rename_reminder_list` (`listId`, `name`)
+## What it can do
 
-Reminder reads and writes return the same shape:
+- List reminder lists and reminders
+- Create reminders, including notes and due dates
+- Complete reminders
+- Update reminder notes
+- Create and rename reminder lists
 
-```json
-{
-  "reminders": [
-    {
-      "id": "11111111-2222-4333-8444-555555555555",
-      "listId": "_icloud-list-id",
-      "title": "Example reminder",
-      "notes": null,
-      "due": "9/11/2026, 5:00 PM",
-      "completed": false
-    }
-  ]
-}
-```
+Deletion, shared-list administration, attachments, subtasks, tags, recurrence, location reminders, and background synchronization are not supported.
 
-List IDs are deterministic `derived:` values based on name and duplicate-name position; they can change if a list is renamed or reordered. Reminder IDs come from iCloud's reminder-row DOM IDs.
+## Requirements
 
-## Observed iCloud workflow
+- Node.js 22 or newer
+- Google Chrome
+- An Apple Account with iCloud Reminders enabled
 
-Verified on September 11, 2026:
+The project is tested on Windows. The implementation does not depend on macOS, and the browser/profile paths can be overridden for other systems.
 
-- `https://www.icloud.com/reminders/` hosts Reminders in `iframe#early-child`.
-- The sidebar is a `role="tree"` named `Reminder Lists`; each list is a direct `role="treeitem"` child.
-- The visible list name is `.inline-editable-label`.
-- Reminder rows expose IDs shaped like `reminder-item-<list-id> Reminder/<reminder-id>`.
-- Reminder title and notes are accessible textboxes; completion is a labeled `button.mark-completed`.
-- List creation uses the visible `Add List` dialog. List names are edited through the sidebar's inline text field.
-- The list action menu currently exposes deletion only. The server does not use it.
-- Signed-out sessions show Apple's sign-in iframe. Password and two-factor authentication stay entirely in that visible Apple browser flow.
-- A sanitized network observation showed private CloudKit `com.apple.reminders` record query/lookup calls plus the Reminders `/rd/state` service. Headers, cookies, query strings, and bodies were not captured.
-
-No private iCloud endpoints are used. Their authentication, mutation, and compatibility behavior has not been tested independently enough to replace the browser boundary.
-
-## Setup
-
-Requires Node.js 22+ and an installed Google Chrome.
+## Install and authenticate
 
 ```powershell
-npm install
+git clone https://github.com/ivanbard/apple-reminders-icloud-mcp.git
+cd apple-reminders-icloud-mcp
+npm ci
 npm run check
-```
-
-Authenticate the dedicated Chrome profile once, then run the MCP server headlessly:
-
-```powershell
 npm run auth
 ```
 
-Sign in and complete two-factor authentication in the Chrome window. It closes when Reminders is ready. Session cookies remain only in `%LOCALAPPDATA%\apple-reminders-icloud-mcp\profile`; the server never reads, stores, logs, or transmits your password or verification code.
+Sign in and complete two-factor authentication in the Chrome window. The window closes when Reminders is ready.
 
-Build and register the STDIO server with Codex:
+Your Apple password and verification code stay in Apple's sign-in flow. This server does not read, store, log, or transmit them. Session cookies are kept in a dedicated Chrome profile at `%LOCALAPPDATA%\apple-reminders-icloud-mcp\profile` on Windows, or `~/apple-reminders-icloud-mcp/profile` when `LOCALAPPDATA` is unavailable.
+
+## Connect an MCP client
+
+Build the server:
 
 ```powershell
 npm run build
+```
+
+For Codex, register the local STDIO server with an absolute path:
+
+```powershell
 codex mcp add apple-reminders-icloud -- node C:\absolute\path\to\apple-reminders-icloud-mcp\dist\index.js
 ```
 
-Or add this to a trusted project's `.codex/config.toml`:
+Or add it to a trusted project's `.codex/config.toml`:
 
 ```toml
 [mcp_servers.apple-reminders-icloud]
@@ -81,23 +60,68 @@ startup_timeout_sec = 10
 tool_timeout_sec = 120
 ```
 
-Restart the local Codex client after changing MCP configuration.
+Other MCP clients can use the same command and absolute `dist/index.js` argument. Restart the client after changing its MCP configuration.
 
-## Errors
+## Tools
 
-- `AUTH_REQUIRED`: run `npm run auth`, then retry.
-- `TWO_FACTOR_REQUIRED`: run `npm run auth`, finish Apple's prompt, then retry.
-- `LISTS_UNAVAILABLE`: Reminders or its lists are unavailable for the current account/session.
-- `LIST_NOT_FOUND`: the requested list ID is unavailable.
-- `REMINDER_NOT_FOUND`: the requested reminder ID is unavailable in that list.
-- `INVALID_ARGUMENT`: a required string is missing or blank.
-- `WRITE_FAILED`: iCloud did not confirm a requested edit.
-- `PAGE_STRUCTURE_CHANGED`: Apple's DOM no longer matches the verified selectors.
+| Tool | Purpose |
+| --- | --- |
+| `list_reminder_lists` | List available reminder lists |
+| `list_reminders` | List reminders in the selected or specified list |
+| `create_reminder` | Create a reminder with optional list, notes, and ISO 8601 due date-time |
+| `complete_reminder` | Mark a reminder complete |
+| `update_reminder_notes` | Replace or clear a reminder's notes |
+| `create_reminder_list` | Create a private reminder list |
+| `rename_reminder_list` | Rename a reminder list |
 
-Set `ICLOUD_PROFILE_DIR` to move the dedicated browser profile, or `ICLOUD_BROWSER_PATH` to use a specific Chromium executable.
+Example prompts:
 
-Run the opt-in live headless suite against the authenticated account with `npm run test:live`. It reads every list and intentionally leaves a timestamped scheduled reminder, test list, and updated reminder for inspection.
+```text
+List my reminder lists.
+Create a reminder called "Renew passport" due 2026-10-01T09:00:00-04:00.
+Mark reminder <reminderId> in list <listId> complete.
+```
 
-## Scope
+Reminder reads and writes return this shape:
 
-Deletion, shared-list administration, attachments, subtasks, tags, recurrence, location reminders, and background synchronization are intentionally excluded. Reminder listing covers iCloud's normal active-list view; completed-history expansion is not implemented.
+```json
+{
+  "reminders": [
+    {
+      "id": "11111111-2222-4333-8444-555555555555",
+      "listId": "derived:0123456789abcdef",
+      "title": "Example reminder",
+      "notes": null,
+      "due": "10/1/2026, 9:00 AM",
+      "completed": false
+    }
+  ]
+}
+```
+
+List IDs are deterministic `derived:` values based on a list's name and duplicate-name position. They can change when a list is renamed or reordered. Reminder IDs come from iCloud's reminder-row identifiers.
+
+## Configuration
+
+- `ICLOUD_PROFILE_DIR`: location of the dedicated Chrome profile
+- `ICLOUD_BROWSER_PATH`: path to a specific Chromium executable
+
+If the server returns `AUTH_REQUIRED` or `TWO_FACTOR_REQUIRED`, run `npm run auth` and retry. Other errors indicate an unavailable list or reminder, a failed write, or an iCloud page change.
+
+## Development
+
+```powershell
+npm run check
+```
+
+`npm run test:live` is opt-in and uses the authenticated account. It reads every list and intentionally leaves a timestamped reminder, test list, and updated reminder for inspection.
+
+## Security and privacy
+
+- Keep the Chrome profile private; it contains the authenticated iCloud session.
+- Only configure this server in MCP clients and projects you trust, because its tools can read and change reminders.
+- Do not commit copied profiles, cookies, logs, or local environment files.
+
+## License
+
+[MIT](LICENSE)
