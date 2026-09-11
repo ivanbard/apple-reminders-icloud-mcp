@@ -95,11 +95,11 @@ const writeAnnotations = {
 };
 
 const server = new Server(
-  { name: "apple-reminders-icloud", version: "0.2.0" },
+  { name: "apple-reminders-icloud", version: "0.2.1" },
   {
     capabilities: { tools: {} },
     instructions:
-      "Use this local headless server to read and manage Apple Reminders through iCloud.com. If authentication is required, tell the user to run 'npm run auth'. Never request Apple credentials or 2FA codes. Deletion is not available.",
+      "Use this local headless server to read and manage Apple Reminders through iCloud.com. If authentication is required, tell the user to run 'npx apple-reminders-icloud-mcp auth'. Never request Apple credentials or 2FA codes. Deletion is not available.",
   },
 );
 

@@ -69,6 +69,14 @@ async function isVisible(locator: Locator): Promise<boolean> {
   return locator.isVisible().catch(() => false);
 }
 
+export async function findAuthenticatedPage(pages: Page[]): Promise<Page | undefined> {
+  for (const page of pages) {
+    const tree = page.frameLocator("iframe#early-child").getByRole("tree", { name: "Reminder Lists" });
+    if (await isVisible(tree)) return page;
+  }
+  return undefined;
+}
+
 async function getPage(): Promise<Page> {
   context ??= await chromium.launchPersistentContext(PROFILE_DIR, {
     channel: "chrome",
@@ -96,7 +104,7 @@ async function requireReminderTree(page: Page): Promise<Locator> {
     if (await isVisible(signIn)) {
       throw new ICloudError(
         "AUTH_REQUIRED",
-        "Run 'npm run auth' to sign in to iCloud, then retry.",
+        "Run 'npx apple-reminders-icloud-mcp auth' to sign in to iCloud, then retry.",
       );
     }
 
@@ -108,13 +116,13 @@ async function requireReminderTree(page: Page): Promise<Locator> {
     if (needsTwoFactor) {
       throw new ICloudError(
         "TWO_FACTOR_REQUIRED",
-        "Run 'npm run auth' to finish Apple two-factor authentication, then retry.",
+        "Run 'npx apple-reminders-icloud-mcp auth' to finish Apple two-factor authentication, then retry.",
       );
     }
     if (await isVisible(page.locator("iframe#aid-auth-widget-iFrame"))) {
       throw new ICloudError(
         "AUTH_REQUIRED",
-        "Run 'npm run auth' to sign in to iCloud, then retry.",
+        "Run 'npx apple-reminders-icloud-mcp auth' to sign in to iCloud, then retry.",
       );
     }
 
@@ -427,12 +435,21 @@ export async function authenticateICloud(): Promise<void> {
   try {
     const page = authContext.pages()[0] ?? (await authContext.newPage());
     await page.goto(ICLOUD_URL, { waitUntil: "domcontentloaded" });
-    const tree = page.frameLocator("iframe#early-child").getByRole("tree", { name: "Reminder Lists" });
-    if (!(await isVisible(tree))) {
+    if (!(await findAuthenticatedPage(authContext.pages()))) {
       const signIn = page.getByText("Sign In", { exact: true }).first();
       if (await isVisible(signIn)) await signIn.click();
       console.error("Complete Apple sign-in and two-factor authentication in Chrome.");
-      await tree.waitFor({ state: "visible", timeout: 10 * 60_000 });
+      const deadline = Date.now() + 10 * 60_000;
+      // ponytail: polling keeps redirects and new tabs on one path; use page events if Apple starts opening many tabs.
+      while (!(await findAuthenticatedPage(authContext.pages()))) {
+        if (authContext.pages().length === 0) {
+          throw new ICloudError("AUTH_REQUIRED", "Chrome was closed before iCloud Reminders finished loading.");
+        }
+        if (Date.now() >= deadline) {
+          throw new ICloudError("AUTH_REQUIRED", "Timed out waiting for iCloud Reminders after sign-in.");
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 500));
+      }
     }
     console.error("iCloud authentication is ready. Chrome will close.");
   } finally {
