@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { deriveListId, normalizeDueText, parseListIdFromReminderRow, parseReminderRowId } from "./icloud.js";
+import { deriveListId, findAuthenticatedPage, normalizeDueText, parseListIdFromReminderRow, parseReminderRowId } from "./icloud.js";
 
 test("extracts the native list ID from an iCloud reminder row", () => {
   assert.equal(
@@ -33,4 +33,17 @@ test("derived IDs are deterministic and disambiguate duplicate names", () => {
 test("uses the semantic due-date line instead of duplicated hidden text", () => {
   assert.equal(normalizeDueText("Today, 9:30 AM, Overdue\nToday, 9:30 AM"), "Today, 9:30 AM, Overdue");
   assert.equal(normalizeDueText(""), null);
+});
+
+test("finds Reminders when Apple opens it in a different page after sign-in", async () => {
+  type TestPage = Parameters<typeof findAuthenticatedPage>[0][number];
+  const page = (visible: boolean) => ({
+    frameLocator: () => ({
+      getByRole: () => ({ isVisible: async () => visible }),
+    }),
+  }) as unknown as TestPage;
+  const signInPage = page(false);
+  const remindersPage = page(true);
+
+  assert.equal(await findAuthenticatedPage([signInPage, remindersPage]), remindersPage);
 });

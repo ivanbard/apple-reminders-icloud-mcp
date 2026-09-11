@@ -25,42 +25,16 @@ The project is tested on Windows. The implementation does not depend on macOS, a
 ## Install and authenticate
 
 ```powershell
-git clone https://github.com/ivanbard/apple-reminders-icloud-mcp.git
-cd apple-reminders-icloud-mcp
-npm ci
-npm run check
-npm run auth
+npx apple-reminders-icloud-mcp setup
 ```
 
-Sign in and complete two-factor authentication in the Chrome window. The window closes when Reminders is ready.
+The setup wizard opens Chrome for Apple sign-in and two-factor authentication, then configures Claude Desktop, Cursor, or Codex. Restart the selected client when setup finishes.
 
 Your Apple password and verification code stay in Apple's sign-in flow. This server does not read, store, log, or transmit them. Session cookies are kept in a dedicated Chrome profile at `%LOCALAPPDATA%\apple-reminders-icloud-mcp\profile` on Windows, or `~/apple-reminders-icloud-mcp/profile` when `LOCALAPPDATA` is unavailable.
 
-## Connect an MCP client
+## Connect another MCP client
 
-Build the server:
-
-```powershell
-npm run build
-```
-
-For Codex, register the local STDIO server with an absolute path:
-
-```powershell
-codex mcp add apple-reminders-icloud -- node C:\absolute\path\to\apple-reminders-icloud-mcp\dist\index.js
-```
-
-Or add it to a trusted project's `.codex/config.toml`:
-
-```toml
-[mcp_servers.apple-reminders-icloud]
-command = "node"
-args = ["C:/absolute/path/to/apple-reminders-icloud-mcp/dist/index.js"]
-startup_timeout_sec = 10
-tool_timeout_sec = 120
-```
-
-Other MCP clients can use the same command and absolute `dist/index.js` argument. Restart the client after changing its MCP configuration.
+Choose manual configuration in the setup wizard and copy the printed command into any STDIO MCP client. Run `npx apple-reminders-icloud-mcp auth` whenever Apple asks you to sign in again.
 
 ## Tools
 
@@ -106,7 +80,7 @@ List IDs are deterministic `derived:` values based on a list's name and duplicat
 - `ICLOUD_PROFILE_DIR`: location of the dedicated Chrome profile
 - `ICLOUD_BROWSER_PATH`: path to a specific Chromium executable
 
-If the server returns `AUTH_REQUIRED` or `TWO_FACTOR_REQUIRED`, run `npm run auth` and retry. Other errors indicate an unavailable list or reminder, a failed write, or an iCloud page change.
+If the server returns `AUTH_REQUIRED` or `TWO_FACTOR_REQUIRED`, run `npx apple-reminders-icloud-mcp auth` and retry. Other errors indicate an unavailable list or reminder, a failed write, or an iCloud page change.
 
 ## Development
 

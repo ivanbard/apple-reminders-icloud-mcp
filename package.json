@@ -1,15 +1,29 @@
 {
   "name": "apple-reminders-icloud-mcp",
-  "version": "0.2.0",
-  "private": true,
+  "version": "0.2.1",
+  "description": "MCP server for managing Apple Reminders through iCloud.com",
   "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "apple-reminders-icloud-mcp": "dist/cli.js"
+  },
+  "files": [
+    "dist/auth.js",
+    "dist/cli.js",
+    "dist/icloud.js",
+    "dist/index.js",
+    "dist/setup.js",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "auth": "npm run build && node dist/auth.js",
+    "auth": "npm run build && node dist/cli.js auth",
     "build": "tsc",
-    "start": "node dist/index.js",
-    "test": "node --test dist/icloud.test.js",
+    "start": "node dist/cli.js",
+    "test": "node --test dist/icloud.test.js dist/setup.test.js",
     "test:live": "npm run build && node --test dist/icloud.live.test.js",
-    "check": "npm run build && npm test"
+    "check": "npm run build && npm test",
+    "prepublishOnly": "npm run check"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -21,5 +35,16 @@
   },
   "engines": {
     "node": ">=22"
-  }
+  },
+  "license": "MIT",
+  "author": "Ivan Bard",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ivanbard/apple-reminders-icloud-mcp.git"
+  },
+  "homepage": "https://github.com/ivanbard/apple-reminders-icloud-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/ivanbard/apple-reminders-icloud-mcp/issues"
+  },
+  "keywords": ["mcp", "apple-reminders", "icloud", "model-context-protocol"]
 }
