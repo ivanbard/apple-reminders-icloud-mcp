@@ -30,6 +30,9 @@ export type ICloudErrorCode =
   | "TWO_FACTOR_REQUIRED"
   | "LISTS_UNAVAILABLE"
   | "LIST_NOT_FOUND"
+  | "REMINDER_NOT_FOUND"
+  | "INVALID_ARGUMENT"
+  | "WRITE_FAILED"
   | "PAGE_STRUCTURE_CHANGED";
 
 export class ICloudError extends Error {
@@ -133,6 +136,16 @@ async function requireReminderTree(page: Page): Promise<Locator> {
   }
 }
 
+async function waitForReminderView(page: Page): Promise<void> {
+  // Give Apple's click handler one task to attach its loading marker, then wait on that marker.
+  await page.waitForTimeout(50);
+  try {
+    await page.frameLocator("iframe#early-child").locator(".rm-loading").waitFor({ state: "hidden", timeout: 15_000 });
+  } catch {
+    throw new ICloudError("LISTS_UNAVAILABLE", "iCloud did not finish loading the reminder list.");
+  }
+}
+
 async function scanReminderLists(): Promise<{
   page: Page;
   items: Locator;
@@ -160,15 +173,10 @@ async function scanReminderLists(): Promise<{
       throw new ICloudError("PAGE_STRUCTURE_CHANGED", "A reminder list is missing its visible name.");
     }
 
-    await item.click();
-    // ponytail: short settle for Apple's client render; replace if the DOM gains a reliable loading signal.
-    await page.waitForTimeout(250);
-    const rowId = await page
-      .frameLocator("iframe#early-child")
-      .locator('[id^="reminder-item-"]')
-      .first()
-      .getAttribute("id")
-      .catch(() => null);
+    await item.dispatchEvent("click");
+    await waitForReminderView(page);
+    const rows = page.frameLocator("iframe#early-child").locator('[id^="reminder-item-"]');
+    const rowId = (await rows.count()) > 0 ? await rows.first().getAttribute("id") : null;
     const nativeId = parseListIdFromReminderRow(rowId);
     const occurrence = occurrences.get(name) ?? 0;
     occurrences.set(name, occurrence + 1);
@@ -180,7 +188,7 @@ async function scanReminderLists(): Promise<{
   }
 
   if (selected >= 0 && selected < count) {
-    await items.nth(selected).click();
+    await items.nth(selected).dispatchEvent("click");
   }
   return { page, items, selected, lists };
 }
@@ -189,49 +197,192 @@ export async function listReminderLists(): Promise<ReminderList[]> {
   return (await scanReminderLists()).lists;
 }
 
-export async function listReminders(listId?: string): Promise<Reminder[]> {
+async function selectReminderList(listId?: string) {
   const scan = await scanReminderLists();
-  const index = listId === undefined ? (scan.selected >= 0 ? scan.selected : 0) : scan.lists.findIndex((list) => list.id === listId);
+  const index =
+    listId === undefined
+      ? scan.selected >= 0
+        ? scan.selected
+        : 0
+      : scan.lists.findIndex((list) => list.id === listId);
   if (index < 0) {
     throw new ICloudError("LIST_NOT_FOUND", `Reminder list '${listId}' is unavailable.`);
   }
+  await scan.items.nth(index).dispatchEvent("click");
+  await waitForReminderView(scan.page);
+  return { ...scan, index, list: scan.lists[index] };
+}
 
-  await scan.items.nth(index).click();
-  // ponytail: short settle for Apple's client render; replace if the DOM gains a reliable loading signal.
-  await scan.page.waitForTimeout(250);
+async function restoreSelectedList(scan: Awaited<ReturnType<typeof scanReminderLists>>): Promise<void> {
+  if (scan.selected >= 0 && scan.selected < scan.lists.length) {
+    await scan.items.nth(scan.selected).dispatchEvent("click");
+  }
+}
+
+async function readReminderRow(row: Locator): Promise<Reminder> {
+  const parsedId = parseReminderRowId(await row.getAttribute("id"));
+  const completionLabel = await row.locator("button.mark-completed").getAttribute("aria-label");
+  if (!parsedId || !/as (?:in)?complete$/i.test(completionLabel ?? "")) {
+    throw new ICloudError("PAGE_STRUCTURE_CHANGED", "A reminder row no longer matches the verified structure.");
+  }
+
+  const title = (await row.getByRole("textbox", { name: "Reminder" }).innerText()).trim();
+  if (!title) {
+    throw new ICloudError("PAGE_STRUCTURE_CHANGED", "A reminder row is missing its title.");
+  }
+  const notes = (await row.getByRole("textbox", { name: "Notes" }).innerText()).trim();
+  const dueLocator = row.locator(".due-date");
+  const due = (await dueLocator.count()) > 0 ? normalizeDueText(await dueLocator.innerText()) : null;
+  return {
+    id: parsedId.reminderId,
+    listId: parsedId.listId,
+    title,
+    notes: notes || null,
+    due,
+    completed: /as incomplete$/i.test(completionLabel ?? ""),
+  };
+}
+
+async function findReminderRow(page: Page, reminderId: string): Promise<Locator> {
+  const rows = page.frameLocator("iframe#early-child").locator('.reminder-item[id^="reminder-item-"]');
+  for (let index = 0; index < (await rows.count()); index += 1) {
+    if (parseReminderRowId(await rows.nth(index).getAttribute("id"))?.reminderId === reminderId) {
+      return rows.nth(index);
+    }
+  }
+  throw new ICloudError("REMINDER_NOT_FOUND", `Reminder '${reminderId}' is unavailable in this list.`);
+}
+
+export async function listReminders(listId?: string): Promise<Reminder[]> {
+  const scan = await selectReminderList(listId);
   const rows = scan.page.frameLocator("iframe#early-child").locator('.reminder-item[id^="reminder-item-"]');
   const reminders: Reminder[] = [];
 
   try {
     for (let rowIndex = 0; rowIndex < (await rows.count()); rowIndex += 1) {
-      const row = rows.nth(rowIndex);
-      const parsedId = parseReminderRowId(await row.getAttribute("id"));
-      const completionLabel = await row.locator("button.mark-completed").getAttribute("aria-label");
-      if (!parsedId || !/as (?:in)?complete$/i.test(completionLabel ?? "")) {
-        throw new ICloudError("PAGE_STRUCTURE_CHANGED", "A reminder row no longer matches the verified structure.");
-      }
-
-      const title = (await row.getByRole("textbox", { name: "Reminder" }).innerText()).trim();
-      if (!title) {
-        throw new ICloudError("PAGE_STRUCTURE_CHANGED", "A reminder row is missing its title.");
-      }
-      const notes = (await row.getByRole("textbox", { name: "Notes" }).innerText()).trim();
-      const dueLocator = row.locator(".due-date");
-      const due = (await dueLocator.count()) > 0 ? normalizeDueText(await dueLocator.innerText()) : null;
-      reminders.push({
-        id: parsedId.reminderId,
-        listId: parsedId.listId,
-        title,
-        notes: notes || null,
-        due,
-        completed: /as incomplete$/i.test(completionLabel ?? ""),
-      });
+      reminders.push(await readReminderRow(rows.nth(rowIndex)));
     }
     return reminders;
   } finally {
-    if (scan.selected >= 0 && scan.selected < scan.lists.length) {
-      await scan.items.nth(scan.selected).click();
+    await restoreSelectedList(scan);
+  }
+}
+
+export async function createReminder(title: string, listId?: string, notes?: string): Promise<Reminder> {
+  const scan = await selectReminderList(listId);
+  try {
+    const frame = scan.page.frameLocator("iframe#early-child");
+    await frame.getByRole("button", { name: "Add new reminder" }).click();
+    const row = frame.locator('.reminder-item[id^="reminder-item-"]').last();
+    await row.getByRole("textbox", { name: "Reminder" }).fill(title);
+    const notesField = row.getByRole("textbox", { name: "Notes" });
+    if (notes !== undefined) {
+      await notesField.fill(notes);
+      await notesField.press("Tab");
+    } else {
+      await row.getByRole("textbox", { name: "Reminder" }).press("Tab");
     }
+    // ponytail: iCloud has no save indicator; a short blur settle is the smallest verified boundary.
+    await scan.page.waitForTimeout(750);
+    return await readReminderRow(row);
+  } catch (error) {
+    if (error instanceof ICloudError) throw error;
+    throw new ICloudError("WRITE_FAILED", `Could not create reminder: ${error instanceof Error ? error.message : "unknown error"}`);
+  } finally {
+    await restoreSelectedList(scan);
+  }
+}
+
+export async function updateReminderNotes(listId: string, reminderId: string, notes: string): Promise<Reminder> {
+  const scan = await selectReminderList(listId);
+  try {
+    const row = await findReminderRow(scan.page, reminderId);
+    const notesField = row.getByRole("textbox", { name: "Notes" });
+    await notesField.fill(notes);
+    await notesField.press("Tab");
+    await scan.page.waitForTimeout(750);
+    return await readReminderRow(row);
+  } catch (error) {
+    if (error instanceof ICloudError) throw error;
+    throw new ICloudError("WRITE_FAILED", `Could not update reminder notes: ${error instanceof Error ? error.message : "unknown error"}`);
+  } finally {
+    await restoreSelectedList(scan);
+  }
+}
+
+export async function completeReminder(
+  listId: string,
+  reminderId: string,
+): Promise<{ id: string; listId: string; completed: true }> {
+  const scan = await selectReminderList(listId);
+  try {
+    const row = await findReminderRow(scan.page, reminderId);
+    const reminder = await readReminderRow(row);
+    if (reminder.completed) {
+      return { id: reminder.id, listId: reminder.listId, completed: true };
+    }
+    await row.locator("button.mark-completed").click();
+    await scan.page.waitForTimeout(750);
+    const remaining = await findReminderRow(scan.page, reminderId).catch(() => undefined);
+    if (remaining) {
+      const label = await remaining.locator("button.mark-completed").getAttribute("aria-label");
+      if (!/as incomplete$/i.test(label ?? "")) {
+        throw new ICloudError("WRITE_FAILED", "iCloud did not mark the reminder complete.");
+      }
+    }
+    return { id: reminder.id, listId: reminder.listId, completed: true };
+  } catch (error) {
+    if (error instanceof ICloudError) throw error;
+    throw new ICloudError("WRITE_FAILED", `Could not complete reminder: ${error instanceof Error ? error.message : "unknown error"}`);
+  } finally {
+    await restoreSelectedList(scan);
+  }
+}
+
+export async function createReminderList(name: string): Promise<ReminderList> {
+  const before = await scanReminderLists();
+  const occurrence = before.lists.filter((list) => list.name === name).length;
+  try {
+    const frame = before.page.frameLocator("iframe#early-child");
+    await frame.getByRole("button", { name: "Add List" }).click();
+    const modal = frame.locator(".reminder-list-modal").last();
+    await modal.locator('input[type="text"]').fill(name);
+    await modal.getByRole("button", { name: "Done", exact: true }).click();
+    await modal.waitFor({ state: "hidden", timeout: 5_000 });
+    const after = await scanReminderLists();
+    const created = after.lists.filter((list) => list.name === name)[occurrence];
+    if (!created) throw new ICloudError("WRITE_FAILED", "iCloud did not create the reminder list.");
+    return created;
+  } catch (error) {
+    if (error instanceof ICloudError) throw error;
+    throw new ICloudError("WRITE_FAILED", `Could not create reminder list: ${error instanceof Error ? error.message : "unknown error"}`);
+  }
+}
+
+export async function renameReminderList(listId: string, name: string): Promise<ReminderList> {
+  const scan = await selectReminderList(listId);
+  try {
+    const item = scan.items.nth(scan.index);
+    const input = item.locator('.inline-editable-textfield input[type="text"]');
+    if (!(await isVisible(input))) {
+      await item.locator(".inline-editable-label").click();
+    }
+    await input.fill(name);
+    await input.press("Enter");
+    await input.press("Tab").catch(() => {});
+    await scan.page.waitForTimeout(750);
+    const after = await scanReminderLists();
+    const renamed =
+      scan.list.idSource === "icloud"
+        ? after.lists.find((list) => list.id === scan.list.id)
+        : after.lists[scan.index];
+    if (!renamed || renamed.name !== name) {
+      throw new ICloudError("WRITE_FAILED", "iCloud did not rename the reminder list.");
+    }
+    return renamed;
+  } catch (error) {
+    if (error instanceof ICloudError) throw error;
+    throw new ICloudError("WRITE_FAILED", `Could not rename reminder list: ${error instanceof Error ? error.message : "unknown error"}`);
   }
 }
 

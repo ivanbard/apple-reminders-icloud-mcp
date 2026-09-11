@@ -1,10 +1,18 @@
 # Apple Reminders iCloud MCP
 
-A local Windows MCP server that reads Apple Reminders through the visible iCloud.com web app. This is unofficial and may need selector maintenance when Apple changes the site.
+A local Windows MCP server that reads and manages Apple Reminders through the visible iCloud.com web app. This is unofficial and may need selector maintenance when Apple changes the site.
 
-## Current slice
+## Tools
 
-`list_reminder_lists` returns list names and identifiers. `list_reminders` accepts an optional `listId` (the currently selected list is used when omitted) and returns:
+- `list_reminder_lists`
+- `list_reminders` (optional `listId`; otherwise uses the selected list)
+- `create_reminder` (`title`, optional `listId` and `notes`)
+- `complete_reminder` (`listId`, `reminderId`)
+- `update_reminder_notes` (`listId`, `reminderId`, `notes`; use `""` to clear)
+- `create_reminder_list` (`name`)
+- `rename_reminder_list` (`listId`, `name`)
+
+Reminder reads and writes return the same shape:
 
 ```json
 {
@@ -25,12 +33,15 @@ The server uses native list IDs found in reminder-row DOM IDs. Empty lists have 
 
 ## Observed iCloud workflow
 
-Verified on September 7, 2026:
+Verified on September 11, 2026:
 
 - `https://www.icloud.com/reminders/` hosts Reminders in `iframe#early-child`.
 - The sidebar is a `role="tree"` named `Reminder Lists`; each list is a direct `role="treeitem"` child.
 - The visible list name is `.inline-editable-label`.
 - Reminder rows expose IDs shaped like `reminder-item-<list-id> Reminder/<reminder-id>`.
+- Reminder title and notes are accessible textboxes; completion is a labeled `button.mark-completed`.
+- List creation uses the visible `Add List` dialog. List names are edited through the sidebar's inline text field.
+- The list action menu currently exposes deletion only. The server does not use it.
 - Signed-out sessions show Apple's sign-in iframe. Password and two-factor authentication stay entirely in that visible Apple browser flow.
 - A sanitized network observation showed private CloudKit `com.apple.reminders` record query/lookup calls plus the Reminders `/rd/state` service. Headers, cookies, query strings, and bodies were not captured.
 
@@ -61,7 +72,7 @@ Or add this to a trusted project's `.codex/config.toml`:
 command = "node"
 args = ["C:/absolute/path/to/apple-reminders-icloud-mcp/dist/index.js"]
 startup_timeout_sec = 10
-tool_timeout_sec = 60
+tool_timeout_sec = 120
 ```
 
 Restart the local Codex client after changing MCP configuration.
@@ -72,10 +83,13 @@ Restart the local Codex client after changing MCP configuration.
 - `TWO_FACTOR_REQUIRED`: finish Apple's two-factor prompt in the browser, then retry.
 - `LISTS_UNAVAILABLE`: Reminders or its lists are unavailable for the current account/session.
 - `LIST_NOT_FOUND`: the requested list ID is unavailable.
+- `REMINDER_NOT_FOUND`: the requested reminder ID is unavailable in that list.
+- `INVALID_ARGUMENT`: a required string is missing or blank.
+- `WRITE_FAILED`: iCloud did not confirm a requested edit.
 - `PAGE_STRUCTURE_CHANGED`: Apple's DOM no longer matches the verified selectors.
 
 Set `ICLOUD_PROFILE_DIR` to move the dedicated browser profile, or `ICLOUD_BROWSER_PATH` to use a specific Chromium executable.
 
 ## Scope
 
-This read-only slice intentionally excludes creating, completing, and deleting reminders. It returns the reminders visible in iCloud's normal list view; completed-history expansion is not implemented.
+Deletion, shared-list administration, attachments, subtasks, tags, recurrence, location reminders, and background synchronization are intentionally excluded. Reminder listing covers iCloud's normal active-list view; completed-history expansion is not implemented.
